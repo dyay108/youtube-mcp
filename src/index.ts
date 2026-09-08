@@ -59,11 +59,13 @@ async function main() {
 
   // Validate or refresh credentials before accepting MCP requests.
   await auth.getClient();
-  const server = createServer(auth);
-
   if (config.transport === "http") {
-    await startHttpTransport(server, { port: config.port, host: config.host });
+    await startHttpTransport(() => createServer(auth), {
+      port: config.port,
+      host: config.host,
+    });
   } else {
+    const server = createServer(auth);
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error("YouTube MCP server running on stdio");

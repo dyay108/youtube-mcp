@@ -94,6 +94,9 @@ node dist/index.js --transport http --port 3000
 | Port | `--port 3000` | `HTTP_PORT` | 3000 |
 | Host | `--host 0.0.0.0` | `HTTP_HOST` | 0.0.0.0 |
 
+The HTTP transport creates an isolated MCP server and transport for every client
+session, so multiple MCP clients can connect concurrently.
+
 ## Tools Reference
 
 ### Playlists (4 tools)
