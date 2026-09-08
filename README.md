@@ -25,15 +25,33 @@ npm run build
 
 ### 2. Configure OAuth
 
-Set these environment variables:
+In Google Cloud Console, enable the YouTube Data API v3 and create an OAuth
+client. Add `http://localhost:3000/callback` as an authorized redirect URI, then
+set these environment variables:
 
 ```env
 GOOGLE_CLIENT_ID=your-client-id
 GOOGLE_CLIENT_SECRET=your-client-secret
 GOOGLE_REDIRECT_URI=http://localhost:3000/callback
+# Optional; defaults to ./.tokens
+TOKEN_STORAGE_PATH=./.tokens
 ```
 
-### 3. Run
+### 3. Authorize
+
+Run the one-time authorization flow. It opens Google consent in your browser and
+stores the resulting credentials in `${TOKEN_STORAGE_PATH}/tokens.json` with
+owner-only file permissions.
+
+```bash
+npm run auth
+```
+
+The callback listener only runs while authorization is in progress. If a browser
+cannot be opened automatically, copy the URL printed in the terminal. The access
+and refresh tokens are never printed.
+
+### 4. Run
 
 ```bash
 # stdio transport (default)
@@ -43,14 +61,20 @@ npm start
 node dist/index.js --transport http --port 3000
 ```
 
-### 4. Claude Desktop Configuration
+### 5. Claude Desktop Configuration
 
 ```json
 {
   "mcpServers": {
     "youtube": {
       "command": "node",
-      "args": ["/path/to/youtube-mcp/dist/index.js"]
+      "args": ["/path/to/youtube-mcp/dist/index.js"],
+      "env": {
+        "GOOGLE_CLIENT_ID": "your-client-id",
+        "GOOGLE_CLIENT_SECRET": "your-client-secret",
+        "GOOGLE_REDIRECT_URI": "http://localhost:3000/callback",
+        "TOKEN_STORAGE_PATH": "/path/to/youtube-mcp/.tokens"
+      }
     }
   }
 }

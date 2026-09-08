@@ -1,0 +1,21 @@
+services:
+  youtube-mcp:
+    build:
+      context: .
+    container_name: youtube-mcp
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID}"
+      GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET}"
+      GOOGLE_REDIRECT_URI: "http://localhost:4444/callback"
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: "4444"
+    command:
+      - node
+      - dist/index.js
+      - --transport
+      - http
+      - --port
+      - "4444"
+networks: {}

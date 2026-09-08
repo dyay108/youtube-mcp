@@ -74,18 +74,31 @@ export class YouTubeAuth {
   /**
    * Generate an authorization URL for the user to visit.
    */
-  getAuthUrl(scopes: string[] = ALL_SCOPES): string {
+  getAuthUrl(scopes: string[] = ALL_SCOPES, state?: string): string {
     return this.oauth2Client.generateAuthUrl({
       access_type: "offline",
       scope: scopes,
       prompt: "consent",
+      include_granted_scopes: true,
+      state,
     });
+  }
+
+  /**
+   * Redirect URI configured for this OAuth client.
+   */
+  get redirectUri(): string {
+    return this.config.redirectUri;
   }
 
   /**
    * Exchange an authorization code for tokens and store them.
    */
   async exchangeCode(code: string): Promise<void> {
+    if (!code.trim()) {
+      throw new Error("Authorization code is required.");
+    }
+
     const { tokens } = await this.oauth2Client.getToken(code);
     this.oauth2Client.setCredentials(tokens);
     await this.saveTokens(tokens);
@@ -122,9 +135,17 @@ export class YouTubeAuth {
   private async saveTokens(tokens: Credentials): Promise<void> {
     const dir = path.dirname(this.tokenPath);
     await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(this.tokenPath, JSON.stringify(tokens), {
+
+    // Refresh responses do not always include a new refresh token. Preserve the
+    // existing one so a successful access-token refresh cannot make the stored
+    // credentials unusable after the next restart.
+    const storedTokens = await this.loadTokens();
+    const credentials = storedTokens ? { ...storedTokens, ...tokens } : tokens;
+
+    await fs.writeFile(this.tokenPath, JSON.stringify(credentials), {
       mode: 0o600, // Owner read/write only
     });
+    await fs.chmod(this.tokenPath, 0o600);
   }
 
   /**

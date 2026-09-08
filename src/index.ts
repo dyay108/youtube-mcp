@@ -1,12 +1,20 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createServer } from "./server.js";
 import { startHttpTransport } from "./transport/http.js";
+import { createAuthFromEnv } from "./auth/oauth.js";
+import { runOAuthFlow } from "./auth/flow.js";
 
-function parseArgs(): { transport: "stdio" | "http"; port: number; host: string } {
+function parseArgs(): {
+  transport: "stdio" | "http";
+  port: number;
+  host: string;
+  authOnly: boolean;
+} {
   const args = process.argv.slice(2);
   let transport: "stdio" | "http" = "stdio";
   let port = 3000;
   let host = "0.0.0.0";
+  let authOnly = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--transport" && args[i + 1]) {
@@ -21,6 +29,8 @@ function parseArgs(): { transport: "stdio" | "http"; port: number; host: string 
     } else if (args[i] === "--host" && args[i + 1]) {
       host = args[i + 1];
       i++;
+    } else if (args[i] === "--auth" || args[i] === "--authorize") {
+      authOnly = true;
     }
   }
 
@@ -29,12 +39,27 @@ function parseArgs(): { transport: "stdio" | "http"; port: number; host: string 
   port = process.env.HTTP_PORT ? parseInt(process.env.HTTP_PORT, 10) : port;
   host = process.env.HTTP_HOST || host;
 
-  return { transport, port, host };
+  return { transport, port, host, authOnly };
 }
 
 async function main() {
   const config = parseArgs();
-  const server = createServer();
+  const auth = createAuthFromEnv();
+
+  if (config.authOnly) {
+    await runOAuthFlow(auth);
+    return;
+  }
+
+  if (!(await auth.hasStoredCredentials())) {
+    throw new Error(
+      "No stored YouTube credentials found. Run `npm run auth` before starting the server.",
+    );
+  }
+
+  // Validate or refresh credentials before accepting MCP requests.
+  await auth.getClient();
+  const server = createServer(auth);
 
   if (config.transport === "http") {
     await startHttpTransport(server, { port: config.port, host: config.host });

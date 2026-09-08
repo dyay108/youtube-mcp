@@ -17,6 +17,7 @@
   "scripts": {
     "build": "node esbuild.build.js",
     "dev": "tsx watch src/index.ts",
+    "auth": "tsx src/index.ts --auth",
     "start": "node dist/index.js",
     "test": "node --experimental-vm-modules node_modules/.bin/jest",
     "typecheck": "tsc --noEmit",

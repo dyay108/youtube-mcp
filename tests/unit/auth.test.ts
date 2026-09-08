@@ -41,6 +41,11 @@ describe("YouTubeAuth", () => {
       const url = auth.getAuthUrl([YOUTUBE_SCOPES.readonly]);
       expect(url).toContain(encodeURIComponent(YOUTUBE_SCOPES.readonly));
     });
+
+    it("includes a state value when provided", () => {
+      const url = new URL(auth.getAuthUrl(undefined, "test-state"));
+      expect(url.searchParams.get("state")).toBe("test-state");
+    });
   });
 
   describe("hasStoredCredentials", () => {
@@ -73,6 +78,25 @@ describe("YouTubeAuth", () => {
 
       const client = await auth.getClient();
       expect(client).toBeDefined();
+    });
+  });
+
+  describe("token persistence", () => {
+    it("preserves the refresh token when new credentials omit it", async () => {
+      const tokenPath = path.join(tmpDir, "tokens.json");
+      await fs.writeFile(
+        tokenPath,
+        JSON.stringify({
+          access_token: "old-access-token",
+          refresh_token: "test-refresh-token",
+        }),
+      );
+
+      await (auth as any).saveTokens({ access_token: "new-access-token" });
+
+      const stored = JSON.parse(await fs.readFile(tokenPath, "utf-8"));
+      expect(stored.access_token).toBe("new-access-token");
+      expect(stored.refresh_token).toBe("test-refresh-token");
     });
   });
 
