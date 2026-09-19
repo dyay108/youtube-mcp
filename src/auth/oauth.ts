@@ -1,7 +1,10 @@
 import { google } from "googleapis";
 import { OAuth2Client, Credentials } from "google-auth-library";
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+
+const AUTHORIZATION_STATE_TTL_MS = 10 * 60 * 1000;
 
 /**
  * YouTube API OAuth scopes mapped by operation category.
@@ -23,6 +26,13 @@ export interface OAuthConfig {
   tokenStoragePath: string;
 }
 
+export class InvalidOAuthStateError extends Error {
+  constructor() {
+    super("OAuth authorization state is invalid or expired.");
+    this.name = "InvalidOAuthStateError";
+  }
+}
+
 /**
  * Manages Google OAuth 2.0 authentication for the YouTube Data API.
  *
@@ -31,6 +41,7 @@ export interface OAuthConfig {
 export class YouTubeAuth {
   private oauth2Client: OAuth2Client;
   private tokenPath: string;
+  private pendingAuthorizations = new Map<string, number>();
 
   constructor(private config: OAuthConfig) {
     this.oauth2Client = new google.auth.OAuth2(
@@ -56,8 +67,8 @@ export class YouTubeAuth {
     const tokens = await this.loadTokens();
     if (!tokens) {
       throw new Error(
-        "No stored credentials found. Run the authorization flow first. " +
-          "Use getAuthUrl() to generate an authorization URL.",
+        "No stored YouTube credentials found. Call the youtube_auth_start tool " +
+          "and present its authorization URL to the user.",
       );
     }
 
@@ -82,6 +93,39 @@ export class YouTubeAuth {
       include_granted_scopes: true,
       state,
     });
+  }
+
+  /**
+   * Start a short-lived authorization attempt and return its Google consent URL.
+   */
+  startAuthorization(scopes: string[] = ALL_SCOPES): string {
+    const now = Date.now();
+    for (const [state, expiresAt] of this.pendingAuthorizations) {
+      if (expiresAt <= now) {
+        this.pendingAuthorizations.delete(state);
+      }
+    }
+
+    const state = randomBytes(32).toString("hex");
+    this.pendingAuthorizations.set(state, now + AUTHORIZATION_STATE_TTL_MS);
+    return this.getAuthUrl(scopes, state);
+  }
+
+  /**
+   * Complete a pending authorization attempt after validating its one-time state.
+   */
+  async completeAuthorization(code: string, state: string): Promise<void> {
+    if (!this.consumeAuthorizationState(state)) {
+      throw new InvalidOAuthStateError();
+    }
+    await this.exchangeCode(code);
+  }
+
+  /**
+   * Cancel a pending authorization attempt, returning whether its state was valid.
+   */
+  cancelAuthorization(state: string): boolean {
+    return this.consumeAuthorizationState(state);
   }
 
   /**
@@ -124,7 +168,7 @@ export class YouTubeAuth {
     } catch {
       throw new Error(
         "Failed to refresh access token. The refresh token may have been revoked. " +
-          "Re-authorize using the authorization flow.",
+          "Call the youtube_auth_start tool and present its authorization URL to the user.",
       );
     }
   }
@@ -170,6 +214,14 @@ export class YouTubeAuth {
     } catch {
       return false;
     }
+  }
+
+  private consumeAuthorizationState(state: string): boolean {
+    if (!state) return false;
+
+    const expiresAt = this.pendingAuthorizations.get(state);
+    this.pendingAuthorizations.delete(state);
+    return expiresAt !== undefined && expiresAt > Date.now();
   }
 }
 

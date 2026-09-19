@@ -1,4 +1,10 @@
-import { YouTubeAuth, YOUTUBE_SCOPES, ALL_SCOPES } from "../../src/auth/oauth.js";
+import { jest } from "@jest/globals";
+import {
+  YouTubeAuth,
+  YOUTUBE_SCOPES,
+  ALL_SCOPES,
+  createAuthFromEnv,
+} from "../../src/auth/oauth.js";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -48,6 +54,23 @@ describe("YouTubeAuth", () => {
     });
   });
 
+  describe("authorization state", () => {
+    it("creates a one-time state for an authorization attempt", async () => {
+      const exchangeCode = jest
+        .spyOn(auth, "exchangeCode")
+        .mockResolvedValue(undefined);
+      const url = new URL(auth.startAuthorization());
+      const state = url.searchParams.get("state");
+
+      expect(state).toBeTruthy();
+      await auth.completeAuthorization("test-code", state!);
+      expect(exchangeCode).toHaveBeenCalledWith("test-code");
+      await expect(
+        auth.completeAuthorization("replayed-code", state!),
+      ).rejects.toThrow("invalid or expired");
+    });
+  });
+
   describe("hasStoredCredentials", () => {
     it("returns false when no tokens stored", async () => {
       const result = await auth.hasStoredCredentials();
@@ -64,7 +87,7 @@ describe("YouTubeAuth", () => {
 
   describe("getClient", () => {
     it("throws when no stored credentials", async () => {
-      await expect(auth.getClient()).rejects.toThrow("No stored credentials found");
+      await expect(auth.getClient()).rejects.toThrow("youtube_auth_start");
     });
 
     it("returns client when valid tokens exist", async () => {
@@ -107,5 +130,40 @@ describe("YouTubeAuth", () => {
       expect(YOUTUBE_SCOPES.upload).toContain("youtube.upload");
       expect(YOUTUBE_SCOPES.forceSsl).toContain("youtube.force-ssl");
     });
+  });
+});
+
+describe("createAuthFromEnv", () => {
+  const originalEnv = {
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    redirectUri: process.env.GOOGLE_REDIRECT_URI,
+  };
+
+  beforeEach(() => {
+    process.env.GOOGLE_CLIENT_ID = "test-client-id";
+    process.env.GOOGLE_CLIENT_SECRET = "test-client-secret";
+    delete process.env.GOOGLE_REDIRECT_URI;
+  });
+
+  afterAll(() => {
+    const restore = (name: string, value: string | undefined) => {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    };
+    restore("GOOGLE_CLIENT_ID", originalEnv.clientId);
+    restore("GOOGLE_CLIENT_SECRET", originalEnv.clientSecret);
+    restore("GOOGLE_REDIRECT_URI", originalEnv.redirectUri);
+  });
+
+  it("uses GOOGLE_REDIRECT_URI for a reverse-proxy callback", () => {
+    process.env.GOOGLE_REDIRECT_URI =
+      "https://youtube.example.com/oauth/youtube/callback";
+
+    const auth = createAuthFromEnv();
+
+    expect(auth.redirectUri).toBe(
+      "https://youtube.example.com/oauth/youtube/callback",
+    );
   });
 });

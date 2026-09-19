@@ -8,10 +8,13 @@ import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import type { YouTubeAuth } from "../auth/oauth.js";
+import { handleOAuthCallback } from "../auth/flow.js";
 
 export interface HttpTransportOptions {
   port: number;
   host: string;
+  oauth?: YouTubeAuth;
 }
 
 export type McpServerFactory = () => McpServer | Promise<McpServer>;
@@ -61,10 +64,31 @@ export async function startHttpTransport(
   options: HttpTransportOptions,
 ): Promise<HttpServer> {
   const sessions = new Map<string, Session>();
+  const oauthCallbackPath = options.oauth
+    ? new URL(options.oauth.redirectUri).pathname || "/"
+    : undefined;
+
+  if (
+    oauthCallbackPath === "/mcp" ||
+    oauthCallbackPath === "/mcp/" ||
+    oauthCallbackPath === "/health"
+  ) {
+    throw new Error("The OAuth callback path conflicts with an MCP HTTP route.");
+  }
 
   const httpServer = createHttpServer(
     async (req: IncomingMessage, res: ServerResponse) => {
       const requestUrl = new URL(req.url ?? "/", "http://localhost");
+
+      if (options.oauth && requestUrl.pathname === oauthCallbackPath) {
+        if (req.method !== "GET") {
+          res.writeHead(405, { Allow: "GET" });
+          res.end("Method not allowed");
+          return;
+        }
+        await handleOAuthCallback(options.oauth, requestUrl, res);
+        return;
+      }
 
       if (requestUrl.pathname === "/health") {
         res.writeHead(200, { "Content-Type": "application/json" });

@@ -51,6 +51,12 @@ The callback listener only runs while authorization is in progress. If a browser
 cannot be opened automatically, copy the URL printed in the terminal. The access
 and refresh tokens are never printed.
 
+When the HTTP server is already running, an agent can call
+`youtube_auth_start`. The tool returns a short-lived Google consent URL for the
+agent to present to the user. The configured OAuth callback is handled by the
+same HTTP server, so this also works when credentials have expired or are
+missing.
+
 ### 4. Run
 
 ```bash
@@ -97,7 +103,31 @@ node dist/index.js --transport http --port 3000
 The HTTP transport creates an isolated MCP server and transport for every client
 session, so multiple MCP clients can connect concurrently.
 
+### Reverse-proxy OAuth callback
+
+Set `GOOGLE_REDIRECT_URI` to the externally reachable HTTPS URL routed to this
+server. For example:
+
+```env
+GOOGLE_REDIRECT_URI=https://youtube.example.com/oauth/youtube/callback
+```
+
+Add that exact URL to the OAuth client's authorized redirect URIs in Google
+Cloud, and configure the reverse proxy to forward
+`/oauth/youtube/callback` to the MCP server's HTTP port. The server derives the
+callback route from this URL; it does not need to listen on port 443 itself.
+
+Use `youtube_auth_start` for this configuration. The standalone `npm run auth`
+command uses a local callback listener and therefore requires a localhost
+callback URL.
+
 ## Tools Reference
+
+### Authentication (1 tool)
+
+| Tool | Description |
+|------|-------------|
+| `youtube_auth_start` | Start OAuth and return a consent URL for the user |
 
 ### Playlists (4 tools)
 

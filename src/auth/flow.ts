@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   createServer,
@@ -6,7 +5,7 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import type { YouTubeAuth } from "./oauth.js";
+import { InvalidOAuthStateError, type YouTubeAuth } from "./oauth.js";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -19,6 +18,12 @@ export interface OAuthFlowOptions {
   /** Receives status messages. Defaults to stderr so stdio MCP stays valid. */
   logger?: (message: string) => void;
 }
+
+export type OAuthCallbackOutcome =
+  | "success"
+  | "declined"
+  | "invalid"
+  | "failed";
 
 function sendHtml(
   res: ServerResponse,
@@ -85,6 +90,119 @@ function close(server: Server): Promise<void> {
 }
 
 /**
+ * Validate and complete a Google OAuth callback, returning a safe browser page.
+ */
+export async function handleOAuthCallback(
+  auth: YouTubeAuth,
+  requestUrl: URL,
+  res: ServerResponse,
+): Promise<OAuthCallbackOutcome> {
+  const state = requestUrl.searchParams.get("state") ?? "";
+  const oauthError = requestUrl.searchParams.get("error");
+
+  if (oauthError) {
+    if (!auth.cancelAuthorization(state)) {
+      sendHtml(
+        res,
+        400,
+        "Authorization failed",
+        "The OAuth state did not match or has expired. Please try again.",
+      );
+      return "invalid";
+    }
+
+    sendHtml(
+      res,
+      400,
+      "Authorization declined",
+      "You can close this window and try again.",
+    );
+    return "declined";
+  }
+
+  const code = requestUrl.searchParams.get("code");
+  if (!code) {
+    sendHtml(
+      res,
+      400,
+      "Authorization failed",
+      "No authorization code was provided.",
+    );
+    return "invalid";
+  }
+
+  try {
+    await auth.completeAuthorization(code, state);
+    sendHtml(
+      res,
+      200,
+      "YouTube authorization complete",
+      "You can close this window and return to your agent.",
+    );
+    return "success";
+  } catch (error) {
+    if (error instanceof InvalidOAuthStateError) {
+      sendHtml(
+        res,
+        400,
+        "Authorization failed",
+        "The OAuth state did not match or has expired. Please try again.",
+      );
+      return "invalid";
+    }
+
+    sendHtml(
+      res,
+      500,
+      "Authorization failed",
+      "The authorization code could not be exchanged. Please try again.",
+    );
+    return "failed";
+  }
+}
+
+/**
+ * Start a persistent callback listener for stdio servers using the auth tool.
+ */
+export async function startOAuthCallbackServer(
+  auth: YouTubeAuth,
+): Promise<Server> {
+  const redirectUri = getLocalRedirectUri(auth);
+  const hostname = redirectUri.hostname.replace(/^\[(.*)\]$/, "$1");
+  const port = redirectUri.port ? Number.parseInt(redirectUri.port, 10) : 80;
+  const callbackPath = redirectUri.pathname || "/";
+
+  const server = createServer(
+    async (req: IncomingMessage, res: ServerResponse) => {
+      const requestUrl = new URL(req.url ?? "/", redirectUri.origin);
+      if (req.method !== "GET" || requestUrl.pathname !== callbackPath) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not found");
+        return;
+      }
+
+      await handleOAuthCallback(auth, requestUrl, res);
+    },
+  );
+
+  await listen(server, port, hostname);
+  return server;
+}
+
+function getLocalRedirectUri(auth: YouTubeAuth): URL {
+  const redirectUri = new URL(auth.redirectUri);
+  const hostname = redirectUri.hostname.replace(/^\[(.*)\]$/, "$1");
+
+  if (redirectUri.protocol !== "http:" || !LOCAL_HOSTS.has(hostname)) {
+    throw new Error(
+      "GOOGLE_REDIRECT_URI must be an http://localhost callback URL for the local OAuth flow.",
+    );
+  }
+
+  return redirectUri;
+}
+
+/**
  * Run the interactive installed-app OAuth flow and persist the resulting token.
  *
  * A short-lived local HTTP listener receives Google's redirect. Tokens are
@@ -95,25 +213,17 @@ export async function runOAuthFlow(
   auth: YouTubeAuth,
   options: OAuthFlowOptions = {},
 ): Promise<void> {
-  const redirectUri = new URL(auth.redirectUri);
+  const redirectUri = getLocalRedirectUri(auth);
   const hostname = redirectUri.hostname.replace(/^\[(.*)\]$/, "$1");
-
-  if (redirectUri.protocol !== "http:" || !LOCAL_HOSTS.has(hostname)) {
-    throw new Error(
-      "GOOGLE_REDIRECT_URI must be an http://localhost callback URL for the local OAuth flow.",
-    );
-  }
 
   const port = redirectUri.port ? Number.parseInt(redirectUri.port, 10) : 80;
   const callbackPath = redirectUri.pathname || "/";
-  const state = randomBytes(32).toString("hex");
-  const authUrl = auth.getAuthUrl(undefined, state);
+  const authUrl = auth.startAuthorization();
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const logger = options.logger ?? console.error;
 
   let settle: (() => void) | undefined;
   let rejectFlow: ((error: Error) => void) | undefined;
-  let handlingCallback = false;
 
   const callback = new Promise<void>((resolve, reject) => {
     settle = resolve;
@@ -129,67 +239,13 @@ export async function runOAuthFlow(
         return;
       }
 
-      if (requestUrl.searchParams.get("state") !== state) {
-        sendHtml(
-          res,
-          400,
-          "Authorization failed",
-          "The OAuth state did not match. Please try again.",
-        );
-        return;
-      }
-
-      const oauthError = requestUrl.searchParams.get("error");
-      if (oauthError) {
-        sendHtml(
-          res,
-          400,
-          "Authorization declined",
-          "You can close this window and try again.",
-        );
-        rejectFlow?.(new Error("Google authorization was declined."));
-        return;
-      }
-
-      const code = requestUrl.searchParams.get("code");
-      if (!code) {
-        sendHtml(
-          res,
-          400,
-          "Authorization failed",
-          "No authorization code was provided.",
-        );
-        return;
-      }
-
-      if (handlingCallback) {
-        sendHtml(
-          res,
-          409,
-          "Authorization in progress",
-          "Please wait for the original request to finish.",
-        );
-        return;
-      }
-      handlingCallback = true;
-
-      try {
-        await auth.exchangeCode(code);
-        sendHtml(
-          res,
-          200,
-          "YouTube authorization complete",
-          "You can close this window.",
-        );
+      const outcome = await handleOAuthCallback(auth, requestUrl, res);
+      if (outcome === "success") {
         settle?.();
-      } catch {
-        handlingCallback = false;
-        sendHtml(
-          res,
-          500,
-          "Authorization failed",
-          "The authorization code could not be exchanged. Please try again.",
-        );
+      } else if (outcome === "declined") {
+        rejectFlow?.(new Error("Google authorization was declined."));
+      } else if (outcome === "failed") {
+        rejectFlow?.(new Error("Google authorization code exchange failed."));
       }
     },
   );

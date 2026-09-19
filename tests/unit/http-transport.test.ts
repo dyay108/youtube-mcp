@@ -2,6 +2,10 @@ import { jest } from "@jest/globals";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import type { AddressInfo } from "node:net";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { YouTubeAuth } from "../../src/auth/oauth.js";
 
 describe("HTTP Transport Module", () => {
   it("exports startHttpTransport function", async () => {
@@ -67,6 +71,45 @@ describe("HTTP Transport Module", () => {
         httpServer.closeIdleConnections();
       });
       log.mockRestore();
+    }
+  });
+
+  it("handles OAuth callbacks on the configured redirect path", async () => {
+    const { startHttpTransport } = await import("../../src/transport/http.js");
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "youtube-mcp-http-auth-"));
+    const auth = new YouTubeAuth({
+      clientId: "test-client-id",
+      clientSecret: "test-client-secret",
+      redirectUri: "https://youtube.example.com/oauth/youtube/callback",
+      tokenStoragePath: tmpDir,
+    });
+    const exchangeCode = jest
+      .spyOn(auth, "exchangeCode")
+      .mockResolvedValue(undefined);
+    const log = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const httpServer = await startHttpTransport(
+      () => new McpServer({ name: "test-server", version: "1.0.0" }),
+      { host: "127.0.0.1", port: 0, oauth: auth },
+    );
+
+    try {
+      const authorizationUrl = new URL(auth.startAuthorization());
+      const state = authorizationUrl.searchParams.get("state");
+      const port = (httpServer.address() as AddressInfo).port;
+      const response = await fetch(
+        `http://127.0.0.1:${port}/oauth/youtube/callback?code=test-code&state=${encodeURIComponent(state!)}`,
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("authorization complete");
+      expect(exchangeCode).toHaveBeenCalledWith("test-code");
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        httpServer.close((error) => (error ? reject(error) : resolve()));
+        httpServer.closeIdleConnections();
+      });
+      log.mockRestore();
+      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
 });

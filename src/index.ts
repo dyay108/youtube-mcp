@@ -2,7 +2,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createServer } from "./server.js";
 import { startHttpTransport } from "./transport/http.js";
 import { createAuthFromEnv } from "./auth/oauth.js";
-import { runOAuthFlow } from "./auth/flow.js";
+import { runOAuthFlow, startOAuthCallbackServer } from "./auth/flow.js";
 
 function parseArgs(): {
   transport: "stdio" | "http";
@@ -51,21 +51,26 @@ async function main() {
     return;
   }
 
-  if (!(await auth.hasStoredCredentials())) {
-    throw new Error(
-      "No stored YouTube credentials found. Run `npm run auth` before starting the server.",
-    );
-  }
-
-  // Validate or refresh credentials before accepting MCP requests.
-  await auth.getClient();
   if (config.transport === "http") {
     await startHttpTransport(() => createServer(auth), {
       port: config.port,
       host: config.host,
+      oauth: auth,
     });
   } else {
-    const server = createServer(auth);
+    let callbackServer: ReturnType<typeof startOAuthCallbackServer> | undefined;
+    const server = createServer(auth, {
+      beginAuthorization: async () => {
+        callbackServer ??= startOAuthCallbackServer(auth);
+        try {
+          await callbackServer;
+        } catch (error) {
+          callbackServer = undefined;
+          throw error;
+        }
+        return auth.startAuthorization();
+      },
+    });
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error("YouTube MCP server running on stdio");

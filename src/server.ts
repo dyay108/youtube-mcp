@@ -19,6 +19,11 @@ import { registerMemberTools } from "./tools/members.js";
 import { registerI18nTools } from "./tools/i18n.js";
 import { registerVideoCategoryTools } from "./tools/video-categories.js";
 import { registerVideoAbuseTools } from "./tools/video-abuse.js";
+import { registerAuthTools, type BeginAuthorization } from "./tools/auth.js";
+
+export interface ServerOptions {
+  beginAuthorization?: BeginAuthorization;
+}
 
 /**
  * Register all YouTube tools on an MCP server with the given client.
@@ -47,13 +52,20 @@ function registerAllTools(server: McpServer, client: YouTubeClient): void {
 /**
  * Create and configure the MCP server with all YouTube tools.
  */
-export function createServer(auth?: YouTubeAuth): McpServer {
+export function createServer(
+  auth?: YouTubeAuth,
+  options: ServerOptions = {},
+): McpServer {
   const server = new McpServer({
     name: "youtube-mcp",
     version: "1.0.0",
   });
 
   if (auth) {
+    registerAuthTools(
+      server,
+      options.beginAuthorization ?? (() => auth.startAuthorization()),
+    );
     const client = new YouTubeClient(auth);
     registerAllTools(server, client);
   }
